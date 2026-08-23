@@ -1,0 +1,6 @@
+[package]
+name = "globlint"
+version = "0.1.0"
+edition = "2021"
+description = "A validating parser and pretty printer for glob patterns."
+license = "MIT"
