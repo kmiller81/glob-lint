@@ -67,12 +67,18 @@ error (no patterns at all).
 - `[abc]` matches one character from the set. `[a-z]` matches one from the
   range. `[!abc]` or `[^abc]` negate the set. A literal `]` inside a class
   must be written `\]`.
+- `{a,b,c}` matches any one of the comma-separated branches. Branches can
+  contain anything a segment can (literal text, `?`, `*`, `[...]` classes,
+  even a nested `{...}` group); `{a,{b,c}}` is `{a,b,c}` in disguise. A
+  literal `{`, `}`, or `,` must be escaped if it isn't meant to take part
+  in a group.
 - `\` escapes the next character, turning off any special meaning it would
   otherwise have.
 
-Patterns are split into segments on unescaped `/`; a `/` inside `[...]` is
-kept as a literal character of the class rather than treated as a
-separator.
+Patterns are split into segments on unescaped `/`; a `/` inside `[...]` or
+`{...}` is kept as a literal character rather than treated as a separator,
+so a branch like `{a,b/c}` stays within one segment instead of being split
+into two.
 
 ## Errors caught today
 
@@ -80,6 +86,7 @@ separator.
 - a `[` that is never closed
 - an empty class, `[]`
 - a class range where the start is after the end, like `[z-a]`
+- a `{` that is never closed
 
 Each error reports a character position (0-indexed, counted in Unicode
 scalar values) pointing at the start of the problem.
@@ -103,7 +110,6 @@ instead of just re-printing it.
 
 Rough order:
 
-- brace alternation, `{a,b,c}`
 - POSIX class names inside brackets, `[:alpha:]` and friends
 - an actual matcher: test a pattern against a real path, not just parse it
 - normalize character classes (merge overlapping ranges, sort items)

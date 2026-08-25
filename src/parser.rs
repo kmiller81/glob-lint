@@ -3,8 +3,8 @@
 //! A pattern is split on unescaped `/` into segments. Each segment is
 //! either the literal string `**` (or any run of two or more bare `*`,
 //! which means the same thing: match zero or more whole path segments)
-//! or a sequence of components: literal text, `?`, `*`, and `[...]`
-//! character classes.
+//! or a sequence of components: literal text, `?`, `*`, `[...]`
+//! character classes, and `{...}` alternation groups.
 
 use std::fmt;
 
@@ -14,6 +14,10 @@ pub enum Component {
     AnyChar,
     Star,
     Class(CharClass),
+    /// A `{a,b,c}` group. Each branch is itself a sequence of components,
+    /// so branches may contain literals, `?`, `*`, `[...]` classes, and
+    /// nested `{...}` groups.
+    Alternation(Vec<Vec<Component>>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -50,6 +54,7 @@ pub enum GlobError {
     UnterminatedClass { pos: usize },
     EmptyClass { pos: usize },
     InvalidRange { pos: usize, lo: char, hi: char },
+    UnterminatedBrace { pos: usize },
 }
 
 impl GlobError {
@@ -61,6 +66,7 @@ impl GlobError {
             GlobError::UnterminatedClass { .. } => "unterminated_class",
             GlobError::EmptyClass { .. } => "empty_class",
             GlobError::InvalidRange { .. } => "invalid_range",
+            GlobError::UnterminatedBrace { .. } => "unterminated_brace",
         }
     }
 
@@ -70,7 +76,8 @@ impl GlobError {
             GlobError::DanglingEscape { pos }
             | GlobError::UnterminatedClass { pos }
             | GlobError::EmptyClass { pos }
-            | GlobError::InvalidRange { pos, .. } => *pos,
+            | GlobError::InvalidRange { pos, .. }
+            | GlobError::UnterminatedBrace { pos } => *pos,
         }
     }
 }
@@ -92,6 +99,9 @@ impl fmt::Display for GlobError {
                 "invalid range '{}-{}' at position {} (start is greater than end)",
                 lo, hi, pos
             ),
+            GlobError::UnterminatedBrace { pos } => {
+                write!(f, "unterminated brace group starting at position {}", pos)
+            }
         }
     }
 }
@@ -118,14 +128,17 @@ pub fn parse(pattern: &str) -> Result<Pattern, GlobError> {
 }
 
 /// Split a pattern into segments on unescaped `/`, ignoring any `/` that
-/// falls inside a `[...]` class. Returns each segment's raw characters
-/// together with its starting offset in the original pattern, which is
-/// used to report absolute error positions later.
+/// falls inside a `[...]` class or a `{...}` brace group (a branch like
+/// `{a,b/c}` stays literal text rather than being split further; see the
+/// README). Returns each segment's raw characters together with its
+/// starting offset in the original pattern, which is used to report
+/// absolute error positions later.
 fn split_segments(chars: &[char]) -> Vec<(usize, Vec<char>)> {
     let mut segments = Vec::new();
     let mut current = Vec::new();
     let mut current_start = 0usize;
     let mut in_class = false;
+    let mut brace_depth = 0usize;
     let mut i = 0;
 
     while i < chars.len() {
@@ -148,7 +161,19 @@ fn split_segments(chars: &[char]) -> Vec<(usize, Vec<char>)> {
             i += 1;
             continue;
         }
-        if c == '/' && !in_class {
+        if c == '{' && !in_class {
+            brace_depth += 1;
+            current.push(c);
+            i += 1;
+            continue;
+        }
+        if c == '}' && !in_class && brace_depth > 0 {
+            brace_depth -= 1;
+            current.push(c);
+            i += 1;
+            continue;
+        }
+        if c == '/' && !in_class && brace_depth == 0 {
             segments.push((current_start, std::mem::take(&mut current)));
             current_start = i + 1;
             i += 1;
@@ -190,6 +215,12 @@ fn tokenize_segment(chars: &[char], base: usize) -> Result<Vec<Component>, GlobE
                 flush_literal(&mut literal, &mut out);
                 let (class, consumed) = parse_class(&chars[i..], base + i)?;
                 out.push(Component::Class(class));
+                i += consumed;
+            }
+            '{' => {
+                flush_literal(&mut literal, &mut out);
+                let (branches, consumed) = parse_brace(&chars[i..], base + i)?;
+                out.push(Component::Alternation(branches));
                 i += consumed;
             }
             _ => {
@@ -267,6 +298,75 @@ fn read_class_char(chars: &[char], i: usize, base: usize) -> Result<(char, usize
         Some(&c) => Ok((c, i + 1)),
         None => Err(GlobError::UnterminatedClass { pos: base }),
     }
+}
+
+/// Parse a `{...}` alternation group starting at `chars[0]` (which must be
+/// `{`). Branches are split on unescaped, top-level commas: a comma inside
+/// a nested `[...]` class or a nested `{...}` group does not split. Each
+/// branch is tokenized the same way a whole segment is, so a branch may
+/// itself contain literals, `?`, `*`, classes, and further nested groups.
+/// Returns the branches and the number of characters consumed from `chars`.
+fn parse_brace(chars: &[char], base: usize) -> Result<(Vec<Vec<Component>>, usize), GlobError> {
+    let mut i = 1; // skip '{'
+    let mut depth = 1usize;
+    let mut in_class = false;
+    let mut branch_start = 1usize;
+    let mut current = Vec::new();
+    let mut raw_branches: Vec<(usize, Vec<char>)> = Vec::new();
+
+    loop {
+        match chars.get(i) {
+            None => return Err(GlobError::UnterminatedBrace { pos: base }),
+            Some(&'\\') => {
+                if i + 1 >= chars.len() {
+                    return Err(GlobError::DanglingEscape { pos: base + i });
+                }
+                current.push('\\');
+                current.push(chars[i + 1]);
+                i += 2;
+            }
+            Some(&'[') if !in_class => {
+                in_class = true;
+                current.push('[');
+                i += 1;
+            }
+            Some(&']') if in_class => {
+                in_class = false;
+                current.push(']');
+                i += 1;
+            }
+            Some(&'{') if !in_class => {
+                depth += 1;
+                current.push('{');
+                i += 1;
+            }
+            Some(&'}') if !in_class => {
+                depth -= 1;
+                if depth == 0 {
+                    raw_branches.push((branch_start, std::mem::take(&mut current)));
+                    i += 1;
+                    break;
+                }
+                current.push('}');
+                i += 1;
+            }
+            Some(&',') if !in_class && depth == 1 => {
+                raw_branches.push((branch_start, std::mem::take(&mut current)));
+                branch_start = i + 1;
+                i += 1;
+            }
+            Some(&c) => {
+                current.push(c);
+                i += 1;
+            }
+        }
+    }
+
+    let mut branches = Vec::with_capacity(raw_branches.len());
+    for (start, raw) in raw_branches {
+        branches.push(collapse_stars(tokenize_segment(&raw, base + start)?));
+    }
+    Ok((branches, i))
 }
 
 /// Collapse runs of two or more bare `*` down to one. A run that fills an
