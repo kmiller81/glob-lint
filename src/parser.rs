@@ -30,6 +30,63 @@ pub struct CharClass {
 pub enum ClassItem {
     Char(char),
     Range(char, char),
+    Posix(PosixClass),
+}
+
+/// One of the standard POSIX named character classes, written `[:name:]`
+/// inside a `[...]` bracket expression (e.g. `[[:alpha:][:digit:]_]`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PosixClass {
+    Alnum,
+    Alpha,
+    Blank,
+    Cntrl,
+    Digit,
+    Graph,
+    Lower,
+    Print,
+    Punct,
+    Space,
+    Upper,
+    Xdigit,
+}
+
+impl PosixClass {
+    fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "alnum" => PosixClass::Alnum,
+            "alpha" => PosixClass::Alpha,
+            "blank" => PosixClass::Blank,
+            "cntrl" => PosixClass::Cntrl,
+            "digit" => PosixClass::Digit,
+            "graph" => PosixClass::Graph,
+            "lower" => PosixClass::Lower,
+            "print" => PosixClass::Print,
+            "punct" => PosixClass::Punct,
+            "space" => PosixClass::Space,
+            "upper" => PosixClass::Upper,
+            "xdigit" => PosixClass::Xdigit,
+            _ => return None,
+        })
+    }
+
+    /// The name as written between the colons, e.g. `"alpha"`.
+    pub fn name(&self) -> &'static str {
+        match self {
+            PosixClass::Alnum => "alnum",
+            PosixClass::Alpha => "alpha",
+            PosixClass::Blank => "blank",
+            PosixClass::Cntrl => "cntrl",
+            PosixClass::Digit => "digit",
+            PosixClass::Graph => "graph",
+            PosixClass::Lower => "lower",
+            PosixClass::Print => "print",
+            PosixClass::Punct => "punct",
+            PosixClass::Space => "space",
+            PosixClass::Upper => "upper",
+            PosixClass::Xdigit => "xdigit",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -55,6 +112,7 @@ pub enum GlobError {
     EmptyClass { pos: usize },
     InvalidRange { pos: usize, lo: char, hi: char },
     UnterminatedBrace { pos: usize },
+    UnknownPosixClass { pos: usize, name: String },
 }
 
 impl GlobError {
@@ -67,6 +125,7 @@ impl GlobError {
             GlobError::EmptyClass { .. } => "empty_class",
             GlobError::InvalidRange { .. } => "invalid_range",
             GlobError::UnterminatedBrace { .. } => "unterminated_brace",
+            GlobError::UnknownPosixClass { .. } => "unknown_posix_class",
         }
     }
 
@@ -77,7 +136,8 @@ impl GlobError {
             | GlobError::UnterminatedClass { pos }
             | GlobError::EmptyClass { pos }
             | GlobError::InvalidRange { pos, .. }
-            | GlobError::UnterminatedBrace { pos } => *pos,
+            | GlobError::UnterminatedBrace { pos }
+            | GlobError::UnknownPosixClass { pos, .. } => *pos,
         }
     }
 }
@@ -102,6 +162,11 @@ impl fmt::Display for GlobError {
             GlobError::UnterminatedBrace { pos } => {
                 write!(f, "unterminated brace group starting at position {}", pos)
             }
+            GlobError::UnknownPosixClass { pos, name } => write!(
+                f,
+                "unknown POSIX class '[:{}:]' at position {}",
+                name, pos
+            ),
         }
     }
 }
@@ -147,6 +212,25 @@ fn split_segments(chars: &[char]) -> Vec<(usize, Vec<char>)> {
             current.push(c);
             current.push(chars[i + 1]);
             i += 2;
+            continue;
+        }
+        if c == '[' && in_class && chars.get(i + 1) == Some(&':') {
+            // A `[:name:]` named class nested inside an already-open
+            // bracket expression, e.g. `[[:alpha:]]`. Consume it whole so
+            // its own `]` doesn't get mistaken for the outer class's
+            // closing bracket below.
+            current.push(c);
+            i += 1;
+            while i < chars.len() {
+                let cc = chars[i];
+                current.push(cc);
+                i += 1;
+                if cc == ':' && chars.get(i) == Some(&']') {
+                    current.push(']');
+                    i += 1;
+                    break;
+                }
+            }
             continue;
         }
         if c == '[' && !in_class {
@@ -262,6 +346,11 @@ fn parse_class(chars: &[char], base: usize) -> Result<(CharClass, usize), GlobEr
                 i += 1;
                 break;
             }
+            Some(&'[') if chars.get(i + 1) == Some(&':') => {
+                let (class, next) = parse_posix_class(chars, i, base)?;
+                items.push(ClassItem::Posix(class));
+                i = next;
+            }
             Some(_) => {
                 let (lo, next) = read_class_char(chars, i, base)?;
                 i = next;
@@ -300,6 +389,33 @@ fn read_class_char(chars: &[char], i: usize, base: usize) -> Result<(char, usize
     }
 }
 
+/// Parse a `[:name:]` named class starting at `chars[i]` (which must be
+/// `[` followed by `:`), nested inside an already-open `[...]` bracket
+/// expression. `base` is the offset of the *outer* class's `[`, used for
+/// error positions in the same way the rest of `parse_class` does.
+/// Returns the class and the index just past the closing `:]`.
+fn parse_posix_class(
+    chars: &[char],
+    i: usize,
+    base: usize,
+) -> Result<(PosixClass, usize), GlobError> {
+    let mut j = i + 2; // skip "[:"
+    let mut name = String::new();
+    loop {
+        match chars.get(j) {
+            None => return Err(GlobError::UnterminatedClass { pos: base }),
+            Some(&':') if chars.get(j + 1) == Some(&']') => break,
+            Some(&c) => {
+                name.push(c);
+                j += 1;
+            }
+        }
+    }
+    let class = PosixClass::from_name(&name)
+        .ok_or(GlobError::UnknownPosixClass { pos: base + i, name })?;
+    Ok((class, j + 2))
+}
+
 /// Parse a `{...}` alternation group starting at `chars[0]` (which must be
 /// `{`). Branches are split on unescaped, top-level commas: a comma inside
 /// a nested `[...]` class or a nested `{...}` group does not split. Each
@@ -324,6 +440,22 @@ fn parse_brace(chars: &[char], base: usize) -> Result<(Vec<Vec<Component>>, usiz
                 current.push('\\');
                 current.push(chars[i + 1]);
                 i += 2;
+            }
+            Some(&'[') if in_class && chars.get(i + 1) == Some(&':') => {
+                // Same nested `[:name:]` case as in `split_segments`: don't
+                // let its `]` close the outer class early.
+                current.push('[');
+                i += 1;
+                while i < chars.len() {
+                    let cc = chars[i];
+                    current.push(cc);
+                    i += 1;
+                    if cc == ':' && chars.get(i) == Some(&']') {
+                        current.push(']');
+                        i += 1;
+                        break;
+                    }
+                }
             }
             Some(&'[') if !in_class => {
                 in_class = true;

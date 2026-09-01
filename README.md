@@ -66,7 +66,13 @@ error (no patterns at all).
   a segment (`a**b`) are just collapsed to a single ordinary `*`.
 - `[abc]` matches one character from the set. `[a-z]` matches one from the
   range. `[!abc]` or `[^abc]` negate the set. A literal `]` inside a class
-  must be written `\]`.
+  must be written `\]`. A class can also contain one or more POSIX named
+  classes, `[:alpha:]`, `[:digit:]`, `[:alnum:]`, `[:upper:]`, `[:lower:]`,
+  `[:space:]`, `[:blank:]`, `[:punct:]`, `[:cntrl:]`, `[:print:]`,
+  `[:graph:]`, and `[:xdigit:]`, written inside the surrounding brackets
+  (`[[:alpha:]_]` matches a letter or underscore). Note the double
+  brackets: `[:alpha:]` on its own, without an enclosing `[...]`, is just
+  the literal characters `:`, `a`, `l`, `p`, `h`.
 - `{a,b,c}` matches any one of the comma-separated branches. Branches can
   contain anything a segment can (literal text, `?`, `*`, `[...]` classes,
   even a nested `{...}` group); `{a,{b,c}}` is `{a,b,c}` in disguise. A
@@ -87,6 +93,7 @@ into two.
 - an empty class, `[]`
 - a class range where the start is after the end, like `[z-a]`
 - a `{` that is never closed
+- a `[:name:]` with a name that isn't one of the twelve standard POSIX classes
 
 Each error reports a character position (0-indexed, counted in Unicode
 scalar values) pointing at the start of the problem.
@@ -110,7 +117,6 @@ instead of just re-printing it.
 
 Rough order:
 
-- POSIX class names inside brackets, `[:alpha:]` and friends
 - an actual matcher: test a pattern against a real path, not just parse it
 - normalize character classes (merge overlapping ranges, sort items)
 - a `--fix` mode that rewrites a file's patterns to their normalized form in place

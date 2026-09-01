@@ -77,6 +77,11 @@ fn print_class(class: &CharClass) -> String {
                 out.push('-');
                 out.push_str(&escape_class_char(*hi));
             }
+            ClassItem::Posix(class) => {
+                out.push_str("[:");
+                out.push_str(class.name());
+                out.push_str(":]");
+            }
         }
     }
     out.push(']');
