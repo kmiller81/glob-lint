@@ -13,9 +13,10 @@ all. `globlint` parses a pattern against one fixed, documented set of rules,
 tells you exactly what's wrong and where, and prints back the canonical form
 so you can see how it was actually understood.
 
-It's a parser and a pretty printer — it does not walk a filesystem or match
-patterns against paths. That's a natural next step, not this one (see
-Roadmap).
+It's a parser, a pretty printer, and a matcher — it does not walk a
+filesystem for you (there's no `--match` in the CLI yet, and no directory
+traversal at all), but the library can tell you whether a given path would
+match a given pattern.
 
 ## Usage
 
@@ -113,10 +114,27 @@ println!("{}", pretty_print(&pattern));
 segments and components directly if you want to inspect the structure
 instead of just re-printing it.
 
+`is_match` checks a path against an already-parsed pattern:
+
+```rust
+use globlint::{parse, is_match};
+
+let pattern = parse("src/**/*.rs")?;
+assert!(is_match(&pattern, "src/parser.rs"));
+assert!(is_match(&pattern, "src/sub/dir/lib.rs"));
+assert!(!is_match(&pattern, "src/main.py"));
+```
+
+Matching works on the parsed structure directly: `*` never crosses a `/`,
+`**` as a whole segment matches zero or more path segments, and classes,
+`?`, and `{...}` alternation all behave the way [Syntax](#syntax) describes.
+There is no special-casing of a leading `.` in either the pattern or the
+path — if you want to exclude dotfiles you need a pattern that says so.
+
 ## Roadmap
 
 Rough order:
 
-- an actual matcher: test a pattern against a real path, not just parse it
 - normalize character classes (merge overlapping ranges, sort items)
 - a `--fix` mode that rewrites a file's patterns to their normalized form in place
+- a unit test suite covering the parser and printer (the matcher already has one)
