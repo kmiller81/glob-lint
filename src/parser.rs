@@ -20,6 +20,10 @@ pub enum Component {
     Alternation(Vec<Vec<Component>>),
 }
 
+/// `items` is always in canonical form after parsing: overlapping or
+/// adjacent `Char`/`Range` entries are merged and sorted by codepoint, and
+/// come before any `Posix` entries, which are themselves sorted and
+/// deduplicated by name. See `normalize_items` for the exact rules.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CharClass {
     pub negated: bool,
@@ -373,7 +377,62 @@ fn parse_class(chars: &[char], base: usize) -> Result<(CharClass, usize), GlobEr
         return Err(GlobError::EmptyClass { pos: base });
     }
 
-    Ok((CharClass { negated, items }, i))
+    let class = CharClass {
+        negated,
+        items: normalize_items(items),
+    };
+    Ok((class, i))
+}
+
+/// Put a class's items into canonical form: overlapping or adjacent
+/// `Char`/`Range` items are merged into the smallest set of ranges that
+/// covers the same characters, sorted by codepoint, followed by the
+/// class's POSIX names (if any), sorted and deduplicated. This never
+/// changes which characters the class matches, only how it is written.
+fn normalize_items(items: Vec<ClassItem>) -> Vec<ClassItem> {
+    let mut posix = Vec::new();
+    let mut ranges: Vec<(u32, u32)> = Vec::new();
+    for item in items {
+        match item {
+            ClassItem::Char(c) => ranges.push((c as u32, c as u32)),
+            ClassItem::Range(lo, hi) => ranges.push((lo as u32, hi as u32)),
+            ClassItem::Posix(p) => posix.push(p),
+        }
+    }
+
+    ranges.sort_unstable();
+    let mut merged: Vec<(u32, u32)> = Vec::with_capacity(ranges.len());
+    for (lo, hi) in ranges {
+        match merged.last_mut() {
+            Some(last) if lo <= last.1.saturating_add(1) => {
+                if hi > last.1 {
+                    last.1 = hi;
+                }
+            }
+            _ => merged.push((lo, hi)),
+        }
+    }
+
+    posix.sort_by_key(|p: &PosixClass| p.name());
+    posix.dedup();
+
+    let mut out = Vec::with_capacity(merged.len() + posix.len());
+    for (lo, hi) in merged {
+        // Both endpoints came from valid `char`s, so the merged range's
+        // endpoints (a subset spanning between them) are always valid too.
+        if lo == hi {
+            out.push(ClassItem::Char(char::from_u32(lo).unwrap()));
+        } else {
+            out.push(ClassItem::Range(
+                char::from_u32(lo).unwrap(),
+                char::from_u32(hi).unwrap(),
+            ));
+        }
+    }
+    for p in posix {
+        out.push(ClassItem::Posix(p));
+    }
+    out
 }
 
 /// Read a single, possibly backslash-escaped character inside a class,
@@ -513,4 +572,77 @@ fn collapse_stars(components: Vec<Component>) -> Vec<Component> {
         out.push(c);
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn class_items(pattern: &str) -> Vec<ClassItem> {
+        match &parse(pattern).unwrap().segments[0].kind {
+            SegmentKind::Parts(components) => match &components[0] {
+                Component::Class(class) => class.items.clone(),
+                other => panic!("expected a class, got {:?}", other),
+            },
+            other => panic!("expected a Parts segment, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn merges_overlapping_ranges() {
+        assert_eq!(
+            class_items("[a-cb-d]"),
+            vec![ClassItem::Range('a', 'd')]
+        );
+    }
+
+    #[test]
+    fn merges_adjacent_ranges() {
+        assert_eq!(
+            class_items("[a-cd-f]"),
+            vec![ClassItem::Range('a', 'f')]
+        );
+    }
+
+    #[test]
+    fn does_not_merge_ranges_with_a_gap() {
+        assert_eq!(
+            class_items("[a-ce-g]"),
+            vec![ClassItem::Range('a', 'c'), ClassItem::Range('e', 'g')]
+        );
+    }
+
+    #[test]
+    fn drops_duplicate_chars() {
+        assert_eq!(class_items("[aa]"), vec![ClassItem::Char('a')]);
+    }
+
+    #[test]
+    fn sorts_items_by_codepoint() {
+        assert_eq!(
+            class_items("[cab]"),
+            vec![
+                ClassItem::Char('a'),
+                ClassItem::Char('b'),
+                ClassItem::Char('c')
+            ]
+        );
+    }
+
+    #[test]
+    fn posix_classes_sort_after_ranges_and_dedup() {
+        assert_eq!(
+            class_items("[[:digit:]a[:digit:][:alpha:]]"),
+            vec![
+                ClassItem::Char('a'),
+                ClassItem::Posix(PosixClass::Alpha),
+                ClassItem::Posix(PosixClass::Digit)
+            ]
+        );
+    }
+
+    #[test]
+    fn single_char_range_collapses_to_char() {
+        assert_eq!(class_items("[a-a]"), vec![ClassItem::Char('a')]);
+    }
 }

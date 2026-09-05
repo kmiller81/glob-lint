@@ -73,7 +73,10 @@ error (no patterns at all).
   `[:graph:]`, and `[:xdigit:]`, written inside the surrounding brackets
   (`[[:alpha:]_]` matches a letter or underscore). Note the double
   brackets: `[:alpha:]` on its own, without an enclosing `[...]`, is just
-  the literal characters `:`, `a`, `l`, `p`, `h`.
+  the literal characters `:`, `a`, `l`, `p`, `h`. A class's contents are
+  normalized on parse: overlapping or adjacent characters and ranges are
+  merged (`[a-cb-d]` becomes `[a-d]`) and sorted by codepoint, with any
+  `[:name:]` classes moved to the end, sorted and deduplicated.
 - `{a,b,c}` matches any one of the comma-separated branches. Branches can
   contain anything a segment can (literal text, `?`, `*`, `[...]` classes,
   even a nested `{...}` group); `{a,{b,c}}` is `{a,b,c}` in disguise. A
@@ -135,6 +138,5 @@ path — if you want to exclude dotfiles you need a pattern that says so.
 
 Rough order:
 
-- normalize character classes (merge overlapping ranges, sort items)
 - a `--fix` mode that rewrites a file's patterns to their normalized form in place
 - a unit test suite covering the parser and printer (the matcher already has one)
