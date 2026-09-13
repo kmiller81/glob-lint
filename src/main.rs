@@ -1,4 +1,5 @@
 use std::env;
+use std::fs;
 use std::process::ExitCode;
 
 use globlint::parser::{self, GlobError};
@@ -15,10 +16,12 @@ fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
 
     let mut json = false;
+    let mut fix = false;
     let mut patterns = Vec::new();
     for arg in &args {
         match arg.as_str() {
             "--json" => json = true,
+            "--fix" => fix = true,
             "-h" | "--help" => {
                 print_usage();
                 return ExitCode::SUCCESS;
@@ -31,6 +34,10 @@ fn main() -> ExitCode {
         eprintln!("error: no pattern given\n");
         print_usage();
         return ExitCode::from(2);
+    }
+
+    if fix {
+        return run_fix(&patterns);
     }
 
     let reports: Vec<Report> = patterns
@@ -68,11 +75,77 @@ fn main() -> ExitCode {
 
 fn print_usage() {
     eprintln!("usage: globlint [--json] <pattern>...");
+    eprintln!("       globlint --fix <file>...");
     eprintln!();
     eprintln!("Validate and pretty-print one or more glob patterns.");
     eprintln!();
     eprintln!("  --json     emit a JSON array of results instead of text");
+    eprintln!("  --fix      rewrite each <file>'s patterns (one per line) to");
+    eprintln!("             their normalized form in place; invalid lines are");
+    eprintln!("             left untouched and reported to stderr");
     eprintln!("  -h, --help show this message");
+}
+
+/// Rewrite each file's patterns (one per line) to their normalized form.
+/// Blank lines are left alone. A line that fails to parse is left as-is
+/// and reported to stderr; every other line in the file is still fixed.
+fn run_fix(paths: &[String]) -> ExitCode {
+    let mut had_error = false;
+
+    for path in paths {
+        let contents = match fs::read_to_string(path) {
+            Ok(c) => c,
+            Err(err) => {
+                eprintln!("error: {}: {}", path, err);
+                had_error = true;
+                continue;
+            }
+        };
+
+        let mut changed = false;
+        let mut fixed_count = 0;
+        let mut out_lines = Vec::with_capacity(contents.lines().count());
+        for (i, line) in contents.lines().enumerate() {
+            if line.trim().is_empty() {
+                out_lines.push(line.to_string());
+                continue;
+            }
+            match parser::parse(line) {
+                Ok(parsed) => {
+                    let normalized = pretty_print(&parsed);
+                    if normalized != line {
+                        changed = true;
+                        fixed_count += 1;
+                    }
+                    out_lines.push(normalized);
+                }
+                Err(err) => {
+                    eprintln!("error: {}:{}: {}", path, i + 1, err);
+                    had_error = true;
+                    out_lines.push(line.to_string());
+                }
+            }
+        }
+
+        if changed {
+            let mut new_contents = out_lines.join("\n");
+            if contents.ends_with('\n') {
+                new_contents.push('\n');
+            }
+            if let Err(err) = fs::write(path, new_contents) {
+                eprintln!("error: {}: {}", path, err);
+                had_error = true;
+                continue;
+            }
+            println!("{}: fixed {} pattern(s)", path, fixed_count);
+        }
+    }
+
+    if had_error {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
 }
 
 fn print_human(reports: &[Report]) {

@@ -16,7 +16,8 @@ so you can see how it was actually understood.
 It's a parser, a pretty printer, and a matcher — it does not walk a
 filesystem for you (there's no `--match` in the CLI yet, and no directory
 traversal at all), but the library can tell you whether a given path would
-match a given pattern.
+match a given pattern, and the CLI can normalize a whole file of patterns
+with `--fix`.
 
 ## Usage
 
@@ -55,6 +56,28 @@ $ globlint --json 'src/**/*.rs' 'notes/[unterminated'
 Multiple patterns can be passed on one command line; the process exits `0`
 if every pattern given was valid, `1` if any were not, and `2` on a usage
 error (no patterns at all).
+
+`--fix <file>...` treats each argument as a path to a file holding one glob
+pattern per line, and rewrites every valid pattern in place to its
+normalized form. Blank lines are left alone, and a line that fails to parse
+is left untouched and reported to stderr rather than blocking the rest of
+the file:
+
+```
+$ cat patterns.txt
+src/**/*.rs
+a**b/[cba]
+notes/[unterminated
+
+$ globlint --fix patterns.txt
+error: patterns.txt:3: unterminated character class starting at position 6
+patterns.txt: fixed 1 pattern(s)
+
+$ cat patterns.txt
+src/**/*.rs
+a*b/[abc]
+notes/[unterminated
+```
 
 ## Syntax
 
@@ -138,5 +161,4 @@ path — if you want to exclude dotfiles you need a pattern that says so.
 
 Rough order:
 
-- a `--fix` mode that rewrites a file's patterns to their normalized form in place
 - a unit test suite covering the parser and printer (the matcher already has one)
