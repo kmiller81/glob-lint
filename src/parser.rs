@@ -645,4 +645,140 @@ mod tests {
     fn single_char_range_collapses_to_char() {
         assert_eq!(class_items("[a-a]"), vec![ClassItem::Char('a')]);
     }
+
+    #[test]
+    fn splits_on_unescaped_slashes() {
+        let pattern = parse("a/b/c").unwrap();
+        assert_eq!(pattern.segments.len(), 3);
+    }
+
+    #[test]
+    fn escaped_slash_does_not_split_a_segment() {
+        let pattern = parse("a\\/b").unwrap();
+        assert_eq!(pattern.segments.len(), 1);
+    }
+
+    #[test]
+    fn slash_inside_a_class_does_not_split_a_segment() {
+        let pattern = parse("[a/b]c").unwrap();
+        assert_eq!(pattern.segments.len(), 1);
+    }
+
+    #[test]
+    fn slash_inside_a_brace_group_does_not_split_a_segment() {
+        let pattern = parse("{a,b/c}").unwrap();
+        assert_eq!(pattern.segments.len(), 1);
+    }
+
+    #[test]
+    fn a_run_of_two_or_more_bare_stars_is_a_recursive_segment() {
+        assert_eq!(parse("**").unwrap().segments[0].kind, SegmentKind::Recursive);
+        assert_eq!(parse("***").unwrap().segments[0].kind, SegmentKind::Recursive);
+    }
+
+    #[test]
+    fn a_single_star_segment_is_not_recursive() {
+        assert_eq!(
+            parse("*").unwrap().segments[0].kind,
+            SegmentKind::Parts(vec![Component::Star])
+        );
+    }
+
+    #[test]
+    fn stars_mixed_with_other_text_collapse_but_stay_a_parts_segment() {
+        assert_eq!(
+            parse("a**b").unwrap().segments[0].kind,
+            SegmentKind::Parts(vec![
+                Component::Literal("a".to_string()),
+                Component::Star,
+                Component::Literal("b".to_string()),
+            ])
+        );
+    }
+
+    #[test]
+    fn escape_turns_off_special_meaning() {
+        assert_eq!(
+            parse("a\\*b").unwrap().segments[0].kind,
+            SegmentKind::Parts(vec![Component::Literal("a*b".to_string())])
+        );
+    }
+
+    #[test]
+    fn brace_group_branches_may_nest() {
+        let pattern = parse("{a,{b,c}}").unwrap();
+        match &pattern.segments[0].kind {
+            SegmentKind::Parts(components) => match &components[0] {
+                Component::Alternation(branches) => {
+                    assert_eq!(branches.len(), 2);
+                    assert_eq!(branches[0], vec![Component::Literal("a".to_string())]);
+                    assert!(matches!(branches[1][0], Component::Alternation(_)));
+                }
+                other => panic!("expected an alternation, got {:?}", other),
+            },
+            other => panic!("expected a Parts segment, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn dangling_escape_at_end_of_pattern_is_an_error() {
+        assert_eq!(parse("a\\").unwrap_err(), GlobError::DanglingEscape { pos: 1 });
+    }
+
+    #[test]
+    fn unterminated_class_is_an_error() {
+        assert_eq!(
+            parse("a[bc").unwrap_err(),
+            GlobError::UnterminatedClass { pos: 1 }
+        );
+    }
+
+    #[test]
+    fn empty_class_is_an_error() {
+        assert_eq!(parse("[]").unwrap_err(), GlobError::EmptyClass { pos: 0 });
+    }
+
+    #[test]
+    fn descending_range_is_an_error() {
+        assert_eq!(
+            parse("[z-a]").unwrap_err(),
+            GlobError::InvalidRange {
+                pos: 0,
+                lo: 'z',
+                hi: 'a'
+            }
+        );
+    }
+
+    #[test]
+    fn unterminated_brace_is_an_error() {
+        assert_eq!(
+            parse("a{b,c").unwrap_err(),
+            GlobError::UnterminatedBrace { pos: 1 }
+        );
+    }
+
+    #[test]
+    fn unknown_posix_class_name_is_an_error() {
+        match parse("[[:bogus:]]").unwrap_err() {
+            GlobError::UnknownPosixClass { pos, name } => {
+                assert_eq!(pos, 1);
+                assert_eq!(name, "bogus");
+            }
+            other => panic!("expected UnknownPosixClass, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn error_code_and_position_are_exposed() {
+        let err = parse("[]").unwrap_err();
+        assert_eq!(err.code(), "empty_class");
+        assert_eq!(err.position(), 0);
+    }
+
+    #[test]
+    fn error_display_mentions_the_position() {
+        let err = parse("a\\").unwrap_err();
+        assert_eq!(err.to_string(), "dangling escape at position 1");
+    }
 }

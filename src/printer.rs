@@ -95,3 +95,92 @@ fn escape_class_char(c: char) -> String {
         c.to_string()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parser::parse;
+
+    fn print(pattern: &str) -> String {
+        pretty_print(&parse(pattern).unwrap())
+    }
+
+    #[test]
+    fn literal_passes_through() {
+        assert_eq!(print("src/main.rs"), "src/main.rs");
+    }
+
+    #[test]
+    fn collapses_runs_of_stars_mixed_into_a_segment() {
+        assert_eq!(print("a**b"), "a*b");
+        assert_eq!(print("a****b"), "a*b");
+    }
+
+    #[test]
+    fn keeps_a_whole_segment_of_stars_as_recursive() {
+        assert_eq!(print("a/**/b"), "a/**/b");
+        assert_eq!(print("a/***/b"), "a/**/b");
+    }
+
+    #[test]
+    fn any_char_passes_through() {
+        assert_eq!(print("a?c"), "a?c");
+    }
+
+    #[test]
+    fn class_normalizes_and_reorders_items() {
+        assert_eq!(print("[cba]"), "[abc]");
+        assert_eq!(print("[a-cb-d]"), "[a-d]");
+        assert_eq!(print("[[:digit:]a[:alpha:]]"), "[a[:alpha:][:digit:]]");
+    }
+
+    #[test]
+    fn negated_class_keeps_bang_form() {
+        assert_eq!(print("[^abc]"), "[!abc]");
+    }
+
+    #[test]
+    fn escapes_special_characters_in_literals() {
+        assert_eq!(print("a\\*b"), "a\\*b");
+        assert_eq!(print("a\\?b"), "a\\?b");
+        assert_eq!(print("a\\[b"), "a\\[b");
+        assert_eq!(print("a\\{b"), "a\\{b");
+        assert_eq!(print("a\\}b"), "a\\}b");
+        assert_eq!(print("a\\,b"), "a\\,b");
+        assert_eq!(print("a\\\\b"), "a\\\\b");
+    }
+
+    #[test]
+    fn escapes_bracket_and_backslash_inside_a_class() {
+        assert_eq!(print("[a\\]b]"), "[\\]ab]");
+        assert_eq!(print("[a\\\\b]"), "[\\\\ab]");
+    }
+
+    #[test]
+    fn alternation_prints_each_branch() {
+        assert_eq!(print("{a,b,c}"), "{a,b,c}");
+        assert_eq!(print("*.{rs,toml}"), "*.{rs,toml}");
+    }
+
+    #[test]
+    fn nested_alternation_keeps_its_own_braces() {
+        assert_eq!(print("{a,{b,c}}"), "{a,{b,c}}");
+    }
+
+    #[test]
+    fn readme_example_round_trips_to_its_normalized_form() {
+        assert_eq!(print("a**b/[cba]"), "a*b/[abc]");
+    }
+
+    #[test]
+    fn output_reparses_to_the_same_structure() {
+        for pattern in ["src/**/*.rs", "a\\*b/[a-c\\]]", "{a,b/c}", "[[:alpha:]_]*"] {
+            let first = parse(pattern).unwrap_or_else(|e| panic!("{:?} failed to parse: {}", pattern, e));
+            let printed = pretty_print(&first);
+            let second = parse(&printed).unwrap_or_else(|e| {
+                panic!("re-parsing {:?} (from {:?}) failed: {}", printed, pattern, e)
+            });
+            assert_eq!(first, second);
+        }
+    }
+}
